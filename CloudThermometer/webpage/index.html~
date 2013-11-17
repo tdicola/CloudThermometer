@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta charset="utf-8">
+        <meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1">
+        <title>CLOUD THERMOMETER</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <link rel="stylesheet" href="//netdna.bootstrapcdn.com/bootstrap/3.0.2/css/bootstrap.min.css">
+        <style>
+            body {
+                margin-top: 20px;
+                margin-bottom: 40px;
+            }
+            .grid path,
+            .grid text,
+            .axis path {
+                display: none;
+            }
+            .axislabel {
+                font-size: large;
+            }
+            .axis line {
+                fill: none;
+                stroke: #000;
+                stroke-width: 2px;
+                shape-rendering: crispEdges;
+            }
+            .grid line {
+                stroke: #ffffff;
+                stroke-width: 2px;
+                shape-rendering: crispEdges;
+            }
+            .grid rect {
+                fill: #dddddd;
+            }
+            .line {
+              fill: none;
+              stroke: steelblue;
+              stroke-width: 2.5px;
+            }
+            .trend {
+                fill: none;
+                stroke: #ff0000;
+                stroke-dasharray: 5,5;
+                stroke-width: 2.5px;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="row">
+                <div class="col-sm-12">
+                    <h1>CLOUD THERMOMETER</h1>
+                    <p>Monitor temperature remotely with an Arduino, CC3000, and DynamoDB.</p>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-sm-3">
+                    <div class="form-group">
+                        <label for="measurementSelect">Measurement:</label>
+                        <select class="form-control" id="measurementSelect">
+                        </select>
+                    </div>
+                    <div id="options">
+                        <div class="form-group">
+                            <a id="export" draggable="true" class="btn btn-default dragout">Export CSV</a>
+                        </div>
+                        <div class="form-group">
+                            <label for="targetTemp">Target (°<span class="tempUnit">F</span>):</label>
+                            <input type="number" class="form-control" id="targetTemp" value="160">
+                        </div>
+                        <div class="form-group checkbox">
+                            <label>
+                                <input type="checkbox" id="drawTrend" checked> Draw Trend Line
+                            </label>
+                        </div>
+                        <div class="form-group checkbox">
+                            <label>
+                                <input type="checkbox" id="autoUpdate" checked> Refresh Every Minute
+                            </label>
+                        </div>
+                        <div class="form-group" id="tempUnitRadio">
+                          <div class="radio">
+                          <label>
+                            <input type="radio" name="tempUnit" id="fahrenheit" value="Fahrenheit" checked>
+                            Fahrenheit
+                          </label>
+                          </div>
+                          <div class="radio">
+                          <label>
+                            <input type="radio" name="tempUnit" id="celsius" value="Celsius">
+                            Celsius
+                          </label>
+                          </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-sm-9" id="content">
+                    <h3><span id="status"></span></h3>
+                    <div id="graph">
+                    </div>
+                </div>
+            </div>
+            <footer class="row col-sm-12">
+                <p>Created by <a href="http://tdicola.github.io/">Tony DiCola</a>.
+                Powered by <a href="http://augmentjs.com/">Augment.js</a>, <a href="http://getbootstrap.com/">Bootstrap</a>, <a href="http://d3js.org/">D3.js</a>, <a href="http://aws.amazon.com/dynamodb/">DynamoDB</a>, and <a href="http://jquery.com/">jQuery</a>.</p>
+            </footer>
+        </div>
+    </body>
+    <script src="//ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script>
+    <script src="//netdna.bootstrapcdn.com/bootstrap/3.0.2/js/bootstrap.min.js"></script>
+    <script src="//cdnjs.cloudflare.com/ajax/libs/augment.js/1.0.0/augment.min.js"></script>
+    <script src="http://d3js.org/d3.v3.min.js" charset="utf-8"></script>
+    <script src="https://sdk.amazonaws.com/js/aws-sdk-2.0.0-rc1.min.js"></script>
+    <!-- AWS SDK info from http://docs.aws.amazon.com/AWSJavaScriptSDK/guide/index.html -->
+    <script>
+        $(document).ready(function() {
+            // Functions to convert to and from kelvin.  The data in the database is kept
+            // in kelvin so it can be converted easily to other units.
+            var fahrenheitToKelvin = function(f) {
+                return (Number(f) + 459.67)*(5/9);
+            };
+            var kelvinToFahrenheit = function(k) {
+                return Number(k)*(9/5) - 459.67;
+            };
+            var celsiusToKelvin = function(c) {
+                return Number(c) + 273.15;
+            };
+            var kelvinToCelsius = function(k) {
+                return Number(k) - 273.15;
+            };
+
+            // Current unit conversion functions.
+            var toKelvin = fahrenheitToKelvin;
+            var fromKelvin = kelvinToFahrenheit;
+
+            // Temperature data retrieved from database.
+            var tempData = null;
+            // Most recently retrieved measurement from database.
+            var lastseen = null;
+            
+            /***********************************************************************************
+             ***********************************************************************************
+             **                                                                               **
+	     **  PUT YOUR READ ONLY USER ACCESS KEYS BELOW:                                   **
+             **  Do NOT put your own AWS credentials below as they will be visible to anyone  **
+             **  views this web page!  Use credentials for a user with read-only access to    **
+             **  to your DynamoDB table.                                                      **
+             **                                                                               **
+	     ***********************************************************************************
+             ***********************************************************************************/
+            AWS.config.update({	accessKeyId: 'AKIAI2MWC2AUO6JCUCXQ', 
+				secretAccessKey: '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' });
+            
+            /***********************************************************************************
+             ***********************************************************************************
+             **                                                                               **
+	     **  PUT YOUR DYNAMODB TABLE REGION BELOW:                                        **
+             **  See http://docs.aws.amazon.com/general/latest/gr/rande.html#ddb_region for   **
+             **  appropriate value.                                                           **		   
+             **                                                                               **
+	     ***********************************************************************************
+             ***********************************************************************************/
+            AWS.config.region = 'us-west-2';
+            var dynamodb = new AWS.DynamoDB();
+
+            // Query all the unique measurement ids from the database.
+            var queryUniqueMeasurements = function(callback) {
+                var measurements = {};
+                // Grab a page of results from the provided start key.
+                var queryPage = function(startkey) {
+                    var params = {  'TableName': 'Temperatures',
+                                    'Select': 'SPECIFIC_ATTRIBUTES',
+                                    'AttributesToGet': ['Id'] };
+                    if (startkey != null) {
+                        params['ExclusiveStartKey'] = startkey;
+                    }
+                    dynamodb.scan(params, function(err, data) {
+                        if (data) {
+                            data.Items.forEach(function(item) {
+                                // Maintain a set of measurement id values.
+                                measurements[item.Id.S] = true;
+                            });
+                            if (data.LastEvaluatedKey) {
+                                // More data to retrieve, grab another page.
+                                queryPage(data.LastEvaluatedKey);
+                            }
+                            else {
+                                // No more data, invoke the callback with results.
+                                callback(measurements);
+                            }
+                        }
+                    });
+                }
+                queryPage();
+            };
+
+            // Query all the temperatures that were measured after lastseen 
+            // for the provided measurement id.
+            var queryTemps = function(measurementId, lastseen, callback) {
+                var data = [];
+                // Grab a page of results from the provided start key.
+                var queryPage = function(startkey) {
+                    var params = {  'TableName': 'Temperatures',
+                                    'Select': 'SPECIFIC_ATTRIBUTES',
+                                    'AttributesToGet': ['Date', 'Temp'],
+                                    'KeyConditions' : { 
+                                        'Id': { 
+                                            'AttributeValueList': [ { 'S': measurementId } ],
+                                            'ComparisonOperator': 'EQ'
+                                        }
+                                    } 
+                                };
+                    if (startkey != null) {
+                        params.ExclusiveStartKey = startkey;
+                    }
+                    if (lastseen != null) {
+                        params.KeyConditions['Date'] = {
+                            'AttributeValueList': [ { 'N': (lastseen.getTime()/1000).toString() } ],
+                            'ComparisonOperator': 'GT'
+                        };
+                    }
+                    dynamodb.query(params, function(err, newdata) {
+                        if (newdata) {
+                            // Add retrieved results to data.
+                            data = data.concat(newdata.Items.map(function(item) {
+                                return { date: new Date(Number(item.Date.N)*1000), temp: Number(item.Temp.N) };
+                            }));
+                            if (newdata.LastEvaluatedKey) {
+                                // More data to retrieve, grab another page.
+                                queryPage(data.LastEvaluatedKey);
+                            }
+                            else {
+                                // No more data, invoke the callback with results.
+                                callback(data);
+                            }
+                        }
+                    });    
+                };
+                queryPage();
+            };
+
+            // var queryTempsTest = function(tempId, lastseen, callback) {
+            //     d3.tsv("/testdata3.tsv", function(error, data) {
+            //         callback(data.map(function(item) {
+            //             return { date: new Date(Number(item.date)*1000), temp: Number(item.temp) };
+            //         }));
+            //     });
+            // };
+
+            // Populate list of temp ID values with data queried from DB.
+            queryUniqueMeasurements(function(measurements) {
+                var measurementSelect = $('#measurementSelect');
+                measurementSelect.empty();
+                measurementSelect.append("<option value='' disabled selected style='display:none;'>Choose...</option>");
+                for (id in measurements) {
+                    measurementSelect.append('<option>' + id + '</option>');
+                }
+            });
+
+            // Compute linear trend line with simple linear regression.
+            // See details from: http://en.wikipedia.org/wiki/Simple_linear_regression
+            var computeLinearTrend = function(data) {    
+                var n = data.length;
+                var Sx = data.reduce(function(accum, item) {
+                    return item.x + accum;
+                }, 0);
+                var Sy = data.reduce(function(accum, item) {
+                    return item.y + accum;
+                }, 0);
+                var Sxx = data.reduce(function(accum, item) {
+                    return item.x*item.x + accum;
+                }, 0);
+                var Sxy = data.reduce(function(accum, item) {
+                    return item.x*item.y + accum;
+                }, 0);
+                var Syy = data.reduce(function(accum, item) {
+                    return item.y*item.y + accum;
+                }, 0);
+                var B = (n*Sxy-Sx*Sy)/(n*Sxx-Sx*Sx);
+                var A = (1/n)*Sy-B*(1/n)*Sx;
+                var R = (n*Sxy-Sx*Sy)/(Math.sqrt((n*Sxx-Sx*Sx)*(n*Syy-Sy*Sy)));
+                return {
+                    B: B,
+                    A: A,
+                    R: R,
+                    value: function(x) {
+                        return A + B*x;
+                    },
+                    intercept: function(y) {
+                        return (y-A)/B;
+                    }
+                };
+            };
+
+            // Draw the temperature graph from the provided temp data, trend line, and target temperature.
+            var drawTempGraph = function(tempData, graphWidth, showTrend, trendLine, targetX, targetTemp) {
+                // Setup margin for axes.
+                var margin = { top: 20, right: 20, bottom: 30, left: 60 };
+                // Set width and height to be based on 4:3 aspect ratio.
+                var width = graphWidth - margin.left - margin.right,
+                    height = (3/4)*width - margin.top - margin.bottom;
+                // Set up time scale on x axis, and linear scale on y axis.
+                var x = d3.time.scale()
+                    .range([0, width]);
+                var y = d3.scale.linear()
+                    .range([height, 0]);
+                var xAxis = d3.svg.axis()
+                    .scale(x)
+                    .orient("bottom");
+                var yAxis = d3.svg.axis()
+                    .scale(y)
+                    .orient("left")
+                    .tickFormat(function(d) {
+                        return d + '°' + $('.tempUnit').first().text();
+                    });
+                // Set path generation function to a line.
+                var line = d3.svg.line()
+                    .x(function(d) { return x(d.date); })
+                    .y(function(d) { return y(fromKelvin(d.temp)); });
+                // Clear the graph if it already exists.
+                d3.select("#graph svg").remove();
+                // Generate the graph SVG.
+                var svg = d3.select("#graph").append("svg")
+                    .attr("width", width + margin.left + margin.right)
+                    .attr("height", height + margin.top + margin.bottom)
+                    .append("g")
+                        .attr("transform", "translate(" + margin.left + "," + margin.top + ")");
+                // Set the domain (min, max values) for the axes.
+                // Note that temp and trend data is kept in kelvin, but axis and line data is converted to selected
+                // temp unit for prettier graphs (D3 will select nice evenly spaced ticks for the current temp unit
+                // instead of kelvins).
+                x.domain(d3.extent(tempData, function(d) { return d.date; }));
+                y.domain(d3.extent(tempData, function(d) { return fromKelvin(d.temp); }));
+                // Generate trend line if necessary.
+                var trendData = null;
+                if (showTrend) {
+                    // Update axis domains to include target temp and time.
+                    x.domain([Math.min(targetX, x.domain()[0]), Math.max(targetX, x.domain()[1])]);
+                    y.domain([Math.min(targetTemp, y.domain()[0]), Math.max(targetTemp, y.domain()[1])]);
+                    // Generate trend line data.
+                    var first = x.domain()[0],
+                        last = x.domain()[1];
+                    trendData = [ { date: first, temp: trendLine.value(first.getTime()) },
+                                  { date: last, temp: trendLine.value(last.getTime()) } ];
+                }
+                // Draw the grid and grid lines
+                var grid = svg.append("g")
+                    .attr("class", "grid");
+                grid.append("rect")
+                    .attr("width", width)
+                    .attr("height", height)
+                grid.append("g")
+                    .call(d3.svg.axis().scale(x).orient("bottom").tickSize(height));
+                grid.append("g")
+                    .call(d3.svg.axis().scale(y).orient("left").tickSize(-width));
+                // Draw the axes.
+                svg.append("g")
+                    .attr("class", "x axis")
+                    .attr("transform", "translate(0," + height + ")")
+                    .call(xAxis)
+                    .append("text")
+                        .attr("class", "axislabel")
+                        .attr("x", width-6)
+                        .attr("dy", -6)
+                        .style("text-anchor", "end")
+                        .text("Time");
+                svg.append("g")
+                    .attr("class", "y axis")
+                    .call(yAxis)
+                    .append("text")
+                        .attr("class", "axislabel")
+                        .attr("transform", "rotate(-90)")
+                        .attr("y", 6)
+                        .attr("dx", -6)
+                        .attr("dy", ".71em")
+                        .style("text-anchor", "end")
+                        .text("Temperature");
+                // Draw the line graph.
+                svg.append("path")
+                    .datum(tempData)
+                    .attr("class", "line")
+                    .attr("d", line);
+                // Draw the trend line.
+                if (showTrend) {
+                    svg.append("path")
+                        .datum(trendData)
+                        .attr("class", "trend")
+                        .attr("d", line);
+                }
+            }
+
+            // Update the graph, trend line, and estimated time.
+            var updateUI = function() {
+                // Check that there are at least two measurements so trend line can be computed.
+                if (tempData == null || tempData.length < 2) {
+                    return;
+                }
+                // Update trend line and finish time.
+                var trendLine = computeLinearTrend(tempData.map(function(i) { return { x: i.date.getTime(), y: i.temp }; }));
+                var targetTemp = $('#targetTemp').val();
+                var targetX = new Date(trendLine.intercept(toKelvin(targetTemp)));
+                // Update status
+                if (tempData[tempData.length-1].temp >= toKelvin(targetTemp)) {
+                    $('#status').addClass('label label-danger');
+                    $('#status').text('Reached Target Temperature!');
+                }
+                else {
+                    // Note, this doesn't handle a target time that takes more than 24 hours!
+                    var targetHour = targetX.getHours();
+                    var ampm = "AM";
+                    if (targetHour == 0) {
+                        targetHour == '12';
+                    }
+                    else if (targetHour > 12) {
+                        targetHour -= 12;
+                        ampm = "PM";
+                    }
+                    $('#status').removeClass();
+                    $('#status').text('Estimated Finish: ' + targetHour + ':' + ('0'+targetX.getMinutes()).slice(-2) + ' ' + ampm);
+                }
+                // Update graph state.
+                var width = $('#graph').width();
+                var showTrend = $('#drawTrend').is(':checked');
+                // Draw graph.
+                drawTempGraph(tempData, width, showTrend, trendLine, targetX, targetTemp);
+            };
+
+            // Update data URI to export CSV data.
+            var updateExportData = function(newdata) {
+                var csvdata = 'Time,Kelvin\n';
+                csvdata = csvdata.concat.apply(csvdata, tempData.map(function(i) {
+                    return i.date.toISOString() + ',' + i.temp + '\n';
+                }));
+                $('#export').attr('href', 'data:text/csv;charset=utf-8,' + encodeURIComponent(csvdata));
+                $('#export').attr('download', $('#measurementSelect').val() + '.csv');
+            };
+
+            // Download data from the database and update the data in memory.
+            var updateData = function() {
+                queryTemps($('#measurementSelect').val(), lastseen, function(data) {
+                    if (tempData == null) {
+                        tempData = data;
+                    }
+                    else {
+                        tempData = tempData.concat(data);
+                    }
+                    // Update UI, etc. if there is data available.
+                    if (tempData != null && tempData.length > 0) {
+                        // Update most recent measurement time.
+                        lastseen = tempData[tempData.length-1].date;
+                        updateExportData(tempData);
+                        updateUI();
+                        // Display the graph options.
+                        $('#options').show();
+                    }
+                });
+            };
+
+            // On initial load hide the graph options.
+            $('#options').hide();
+
+            // Draw graph when measurement is selected.
+            $('#measurementSelect').change(function() {
+                tempData = null;
+                updateData();
+            });
+
+            // Update graph when draw trend line checkbox is changed.
+            $('#drawTrend').change(function() {
+                updateUI();
+            });
+
+            // Update graph when target temperature is changed.
+            $('#targetTemp').change(function() {
+                updateUI();
+            });
+
+            // Change temperature units when temp unit radio button is changed.
+            $('#tempUnitRadio').change(function() {
+                var useFahrenheit = $('#fahrenheit').is(':checked');
+                // Get current target in kelvins so it can be converted to the desired units.
+                var targetKelvin = toKelvin($('#targetTemp').val());
+                if (useFahrenheit) {
+                    $('.tempUnit').text('F');
+                    toKelvin = fahrenheitToKelvin;
+                    fromKelvin = kelvinToFahrenheit;
+                }
+                else {
+                    $('.tempUnit').text('C');
+                    toKelvin = celsiusToKelvin;
+                    fromKelvin = kelvinToCelsius;
+                }
+                // Update target to appropriate value in selected units.
+                $('#targetTemp').val(fromKelvin(targetKelvin).toFixed(0));
+                updateUI();
+            });
+
+            // Resize graph when window is resized.
+            $(window).resize(function() {
+                updateUI();
+            });
+
+            // Create auto update timer to run once a minute.
+            var timer = window.setInterval(function() {
+                // Update the data if auto updates are turned on and a measurement is selected.
+                if ($('#autoUpdate').is(':checked') && $('#measurementSelect').val() != null) {
+                    updateData();
+                }
+            }, 60*1000);
+        });
+    </script>
+</html>
+
