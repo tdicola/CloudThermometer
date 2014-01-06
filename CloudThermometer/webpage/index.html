@@ -393,9 +393,10 @@
                 var targetTemp = $('#targetTemp').val();
                 var targetX = new Date(trendLine.intercept(toKelvin(targetTemp)));
                 // Update status
-                if (tempData[tempData.length-1].temp >= toKelvin(targetTemp)) {
+                var lastTemp = tempData[tempData.length-1].temp;
+                if (lastTemp >= toKelvin(targetTemp)) {
                     $('#status').addClass('label label-danger');
-                    $('#status').text('Reached Target Temperature!');
+                    $('#status').text('Temperature: ' + fromKelvin(lastTemp).toFixed(1) + '°' + $('.tempUnit').first().text() + ' - Reached Target Temperature!');
                 }
                 else {
                     // Note, this doesn't handle a target time that takes more than 24 hours!
@@ -409,7 +410,7 @@
                         ampm = "PM";
                     }
                     $('#status').removeClass();
-                    $('#status').text('Estimated Finish: ' + targetHour + ':' + ('0'+targetX.getMinutes()).slice(-2) + ' ' + ampm);
+                    $('#status').text('Temperature: ' + fromKelvin(lastTemp).toFixed(1) + '°' + $('.tempUnit').first().text() + ' - Estimated Finish: ' + targetHour + ':' + ('0'+targetX.getMinutes()).slice(-2) + ' ' + ampm);
                 }
                 // Update graph state.
                 var width = $('#graph').width();
